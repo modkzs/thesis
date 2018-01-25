@@ -109,6 +109,7 @@ class MatchModel(object):
             vec_1 = tf.placeholder(shape=[None, self.word_evc_len], dtype=np.float16, name="vec1")
             vec_2 = tf.placeholder(shape=[None, self.word_evc_len], dtype=np.float16, name="vec2")
 
+            # TODO: is concat too simple?
             final_vec = tf.concat([sen_1, sen_2, vec_1, vec_2], axis=0)
 
             weight = tf.Variable(
@@ -143,6 +144,7 @@ class MatchModel(object):
         vec_1 = self.gen_seq(sen_1)
         vec_2 = self.gen_seq(sen_2)
 
+        # TODO: vectorize it to speed up or update in GPU?
         for p in seq:
             if p[1] > p[2] and p[1] > p[3]:
                 action = 0
@@ -161,6 +163,7 @@ class MatchModel(object):
                                                         self.deep_model['vec_2']: vec_2[pos[1]],
                                                         self.deep_model['label']: p})
 
+    # TODO: This train is slow, need to rewrite it, the execute cell is 3 LSTM cell not a LSTM sentence
     def reward_model(self, lr):
         with tf.variable_scope('reward_model'):
             # sentence input
@@ -171,6 +174,7 @@ class MatchModel(object):
 
             token = tf.unstack(sen, self.max_sen_len, 1)
 
+        # TODO: using this RNN is very slow. How good? may other choice(like using pre-train RNN or just word_vec)?
         with tf.variable_scope('reward_model_sen'):
             # using LSTM to encode input sentence, output should be input of seq model
             outputs, _ = rnn.static_rnn(
@@ -199,6 +203,7 @@ class MatchModel(object):
             seq_sen_var_1 = tf.assign(seq_sen_var_1, seq_sen_1)
             seq_sen_var_2 = tf.assign(seq_sen_var_2, seq_sen_2)
 
+            # TODO: concat?
             seq_input = tf.concat([seq_sen_var_1, seq_sen_var_2, seqs], axis=2)
 
             seq_input = tf.unstack(seq_input, self.max_sen_len, 1)
@@ -245,6 +250,7 @@ class MatchModel(object):
             feed_dict={self.reward['seq_sen_1']: output_1, self.reward['seq_sen_2']: output_2, self.reward['seq']: seqs}
         )[1, 2]
 
+        # TODO: each cell get same weight, actually should use map to get cell use weight and using it update model?
         self.session.run(self.reward['train_op_sen'],
                          feed_dict={self.reward['sen']: sen_1, self.reward['gradient']: grad[0]})
         self.session.run(self.reward['train_op_sen'],
@@ -257,6 +263,7 @@ class MatchModel(object):
         vec_1 = np.array([word_vec[s] for s in sen_1 if s in word_vec])
         vec_2 = np.array([word_vec[s] for s in sen_2 if s in word_vec])
 
+        # TODO: we currently use a pre-trained model to represent sentence, may other way(like using reward RNN)?
         vec_1 = self.gen_seq(vec_1)
         vec_2 = self.gen_seq(vec_2)
 
@@ -304,9 +311,22 @@ class MatchModel(object):
 
         return maps_1, maps_2, directions
 
-    def predict(self, sen_1, sen_2):
+    def predict(self, sen_1, sen_2, word_vec):
+        sens_1 = [s.split(' ') for s in sen_1]
+        sens_2 = [s.split(' ') for s in sen_2]
+
+        sen_vec_1 = [[word_vec[s] for s in sen] for sen in sens_1]
+        sen_vec_2 = [[word_vec[s] for s in sen] for sen in sens_2]
+
+        # first train deep model
+        sen_vec_1 = [s + [[0] * self.word_evc_len] * (self.max_sen_len - len(s)) for s in sen_vec_1]
+        sen_vec_2 = [s + [[0] * self.word_evc_len] * (self.max_sen_len - len(s)) for s in sen_vec_2]
+
+    # TODO: wait to write.....
+    def validate(self, sen_1, sen_2, label):
         pass
 
+    # TODO: word_vec is so fucking huge, how to kick it out?
     def train(self, sens_1, sens_2, labels, batch_size, word_vec):
         sens_1 = [s.split(' ') for s in sens_1]
         sens_2 = [s.split(' ') for s in sens_2]
@@ -331,5 +351,6 @@ class MatchModel(object):
 
             reward = self.get_reward(sen_vec_1, sen_vec_2, directions, map_1, map_2)
 
-            self.update_policy(reward, directions, sen_vec_1, sen_vec_2)
-
+            # TODO: this as vectorize?
+            for i in range(len(directions)):
+                self.update_policy(reward[i], directions[i], sen_vec_1[i], sen_vec_2[i])
