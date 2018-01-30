@@ -12,6 +12,7 @@ class MatchModel(object):
         self.max_sen_len = max_sen_len
         self.word_evc_len = word_vec_len
         self.actions = [[0, 1], [1, 0], [1, 1]]
+        self.seed = seed
 
         # deep match parameter
         self.deep_hidden_num = 128
@@ -44,16 +45,18 @@ class MatchModel(object):
 
             outputs_1, states_1 = tf.nn.dynamic_rnn(
                 tf.nn.rnn_cell.LSTMCell(self.deep_hidden_num, state_is_tuple=True, reuse=tf.AUTO_REUSE,
-                                        initializer=tf.orthogonal_initializer(dtype=tf.float32)), input_1,
+                                        initializer=tf.orthogonal_initializer(dtype=tf.float32, seed=self.seed)), input_1,
                 dtype=tf.float32, time_major=True)
             outputs_2, states_2 = tf.nn.dynamic_rnn(
                 tf.nn.rnn_cell.LSTMCell(self.deep_hidden_num, state_is_tuple=True, reuse=tf.AUTO_REUSE,
-                                        initializer=tf.orthogonal_initializer(dtype=tf.float32)), input_2,
+                                        initializer=tf.orthogonal_initializer(dtype=tf.float32, seed=self.seed)), input_2,
                 dtype=tf.float32, time_major=True)
             final_output = tf.concat([outputs_1[-1], outputs_2[-1]], axis=1)
 
-            weight = tf.Variable(tf.random_normal([self.deep_hidden_num * 2, 1], dtype=np.float32), dtype=np.float32)
-            bias = tf.Variable(tf.random_normal([1, 1], dtype=np.float32), dtype=np.float32)
+            weight = tf.get_variable('weight', shape=[self.deep_hidden_num * 2, 1],
+                                     initializer=tf.contrib.layers.xavier_initializer(seed=self.seed))
+            bias = tf.get_variable('bias', shape=[1, 1],
+                                   initializer=tf.contrib.layers.xavier_initializer(seed=self.seed))
             logits = tf.matmul(final_output, weight) + bias
             prediction = tf.nn.sigmoid(logits)
 
@@ -119,16 +122,18 @@ class MatchModel(object):
         test_sen_2 = np.transpose(test_sen_2, (1, 0, 2))
 
         for k in range(epochs):
+            acc = 0
             for i in range(len(train_sen_1)):
                 tmp_x_1 = train_sen_1[i]
                 tmp_x_2 = train_sen_2[i]
                 tmp_y = train_y[i].reshape([-1, 1])
-                self.session.run(self.deep_model['train_op'],
-                                 feed_dict={self.deep_model['input_1']: tmp_x_1,
-                                            self.deep_model['input_2']: tmp_x_2,
-                                            self.deep_model['label']: tmp_y})
+                acc += self.session.run([self.deep_model['train_op'], self.deep_model['accuracy']],
+                                        feed_dict={self.deep_model['input_1']: tmp_x_1,
+                                                   self.deep_model['input_2']: tmp_x_2,
+                                                   self.deep_model['label']: tmp_y})[-1]
 
-            print('\ntest accuracy:', self.session.run(self.deep_model['accuracy'],
+            print('train acc: %.6f' % (acc / len(train_sen_1)),
+                  'test  acc: %.6f' % self.session.run(self.deep_model['accuracy'],
                                                        feed_dict={self.deep_model['input_1']: test_sen_1,
                                                                   self.deep_model['input_2']: test_sen_2,
                                                                   self.deep_model['label']: test_y}))
@@ -141,6 +146,8 @@ class MatchModel(object):
         """
         if len(sen_vec.shape) < 3:
             sen_vec = sen_vec.reshape([1, sen_vec.shape[0], sen_vec.shape[1]])
+
+        sen_vec = np.transpose(sen_vec, (1, 0, 2))
         return self.session.run(self.deep_model['outputs_1'], feed_dict={self.deep_model['input_1']: sen_vec})
 
     def policy_model(self, lr):
@@ -154,10 +161,10 @@ class MatchModel(object):
             # TODO: is concat too simple?
             final_vec = tf.concat([sen_1, sen_2, vec_1, vec_2], axis=1)
 
-            weight = tf.Variable(
-                tf.random_normal([(self.word_evc_len + self.deep_hidden_num) * 2, 3], dtype=np.float32),
-                dtype=np.float32)
-            bias = tf.Variable(tf.random_normal([3, ], dtype=np.float32), dtype=np.float32)
+            weight = tf.get_variable('weight', shape=[(self.word_evc_len + self.deep_hidden_num) * 2, 3],
+                                     initializer=tf.contrib.layers.xavier_initializer(seed=self.seed))
+            bias = tf.get_variable('bias', shape=[3, ],
+                                   initializer=tf.contrib.layers.xavier_initializer(seed=self.seed))
             logits = tf.matmul(final_vec, weight) + bias
             prediction = tf.nn.softmax(logits)
 
@@ -174,7 +181,7 @@ class MatchModel(object):
             return {'sen_1': sen_1, 'sen_2': sen_2, 'vec_1': vec_1, 'vec_2': vec_2, 'label': label,
                     'prediction': prediction, 'optimizer': train_op, 'reward': gradient}
 
-    # hidden of sen_1 and sen_2 from DeepMatch model, and 2 word vector    
+    # hidden of sen_1 and sen_2 from DeepMatch model, and 2 word vector
     def get_policy(self, sen_1, sen_2, vec_1, vec_2):
         def add_dim(x): return x if len(x.shape) > 1 else x.reshape([1, -1])
 
@@ -219,7 +226,7 @@ class MatchModel(object):
             # using LSTM to encode input sentence, output should be input of seq model
             outputs, _ = tf.nn.dynamic_rnn(
                 tf.nn.rnn_cell.LSTMCell(self.deep_hidden_num, state_is_tuple=True, reuse=tf.AUTO_REUSE,
-                                        initializer=tf.orthogonal_initializer(dtype=tf.float32)), sen,
+                                        initializer=tf.orthogonal_initializer(dtype=tf.float32, seed=self.seed)), sen,
                 dtype=tf.float32, time_major=True)
 
             # mean is useless when predict, only used to compute gradient
@@ -266,10 +273,14 @@ class MatchModel(object):
 
             outputs_seq, _ = tf.nn.dynamic_rnn(
                 tf.nn.rnn_cell.LSTMCell(self.deep_hidden_num, state_is_tuple=True, reuse=tf.AUTO_REUSE,
-                                        initializer=tf.orthogonal_initializer(dtype=tf.float32)), seq_input,
+                                        initializer=tf.orthogonal_initializer(dtype=tf.float32, seed=self.seed)), seq_input,
                 dtype=tf.float32, time_major=True)
-            weight = tf.Variable(tf.random_normal([self.reward_hidden_num, 1], dtype=np.float32), dtype=np.float32)
-            bias = tf.Variable(tf.random_normal([1, 1], dtype=np.float32), dtype=np.float32)
+
+            weight = tf.get_variable('weight', shape=[self.reward_hidden_num, 1],
+                                     initializer=tf.contrib.layers.xavier_initializer(seed=self.seed))
+            bias = tf.get_variable('bias', shape=[1, 1],
+                                   initializer=tf.contrib.layers.xavier_initializer(seed=self.seed))
+
             logits = tf.matmul(outputs_seq[-1], weight) + bias
             prediction = tf.nn.sigmoid(logits)
 
@@ -293,6 +304,8 @@ class MatchModel(object):
         map_1 = map_1 if len(map_1.shape) == 3 else map_1.reshape([map_1.shape[0], map_1.shape[1], 1])
         map_2 = map_2 if len(map_2.shape) == 3 else map_2.reshape([map_2.shape[0], map_2.shape[1], 1])
 
+        seqs = seqs if len(seqs.shape) == 3 else seqs.reshape([1, seqs.shape[0], seqs.shape[1]])
+
         output_1 = self.session.run(self.reward['outputs'], feed_dict={self.reward['sen']: sen_1})
         output_2 = self.session.run(self.reward['outputs'], feed_dict={self.reward['sen']: sen_2})
 
@@ -301,7 +314,7 @@ class MatchModel(object):
                                            self.reward['seqs']: seqs,
                                            self.reward['map_1']: map_1, self.reward['map_2']: map_2})
 
-    # a really fucking complicated function. 
+    # a really fucking complicated function.
     # Must compte reward seq model first, then get each gradient to reward sentence model, then update sentence model
     def update_reward(self, sen_1, sen_2, seqs, labels, map_1, map_2):
         sen_1 = sen_1 if len(sen_1.shape) == 3 else sen_1.reshape([1, sen_1.shape[0], sen_1.shape[1]])
@@ -396,6 +409,9 @@ class MatchModel(object):
         :param gen_num: generate path number
         :return:
         """
+        assert vec_1.shape[0] == sen_1.shape[0]
+        assert vec_2.shape[1] == sen_2.shape[1]
+
         len_1 = sen_1.shape[0]
         len_2 = sen_2.shape[0]
 
@@ -441,36 +457,68 @@ class MatchModel(object):
                 map_1 += [i for i in range(pos[0], len_1)]
                 map_2 += [map_2[-1]] * (len_1 - pos[0])
 
-            results[len(map_1)] = results.get(len(map_1), self.SimulationPath())\
+            results[len(map_1)] = results.get(len(map_1), self.SimulationPath()) \
                 .add_path(map_1, map_2, direction, labels, vec_1, vec_2, sen_1, sen_2, label)
         return results
 
-    def predict(self, sen_1, sen_2, word_vec):
-        sens_1 = [s.split(' ') for s in sen_1]
-        sens_2 = [s.split(' ') for s in sen_2]
+    # TODO: how to run in batch?
+    def predict(self, vec_1, vec_2, sen_1, sen_2):
+        len_1 = sen_1.shape[0]
+        len_2 = sen_2.shape[0]
 
-        sen_vec_1 = [[word_vec[s] for s in sen] for sen in sens_1]
-        sen_vec_2 = [[word_vec[s] for s in sen] for sen in sens_2]
+        pos = [0, 0]
+        direction = []
+        map_1 = []
+        map_2 = []
 
-        sen_vec_1 = [s + [[0] * self.word_evc_len] * (self.max_sen_len - len(s)) for s in sen_vec_1]
-        sen_vec_2 = [s + [[0] * self.word_evc_len] * (self.max_sen_len - len(s)) for s in sen_vec_2]
+        while pos[0] < len_1 and pos[1] < len_2:
+            map_1.append(pos[0])
+            map_2.append(pos[1])
 
-        tmps = self.monte_carlo(sens_1, sens_2, word_vec, 1)
+            p = self.get_policy(sen_1[pos[0]], sen_2[pos[1]], vec_1[pos[0]], vec_2[pos[1]])[0]
 
-        return self.get_reward(sen_vec_1, sen_vec_2, tmps[2], tmps[0], tmps[1])
+            if p[0] > p[1] and p[0] > p[2]:
+                action = 0
+            elif p[1] > p[2] and p[1] > p[0]:
+                action = 1
+            else:
+                action = 2
+
+            pos[0] += self.actions[action][0]
+            pos[1] += self.actions[action][1]
+
+            direction.append(p)
+
+        if pos[0] == len_1:
+            direction += [np.array([1, 0, 0])] * (len_2 - pos[1])
+            map_1 += [map_1[-1]] * (len_2 - pos[1])
+            map_2 += [i for i in range(pos[1], len_2)]
+        else:
+            direction += [np.array([0, 1, 0])] * (len_1 - pos[0])
+            map_1 += [i for i in range(pos[0], len_1)]
+            map_2 += [map_2[-1]] * (len_1 - pos[0])
+
+        return self.get_reward(np.array(vec_1), np.array(vec_2), np.array(direction),
+                               np.array(map_1).reshape([1, -1]), np.array(map_2).reshape([1, -1]))
 
     # TODO: wait to write.....
-    def validate(self, sen_1, sen_2, label):
-        pass
+    def validate(self, sen_1, sen_2, vec_1, vec_2, label, threshold=0.5, val_func=lambda t, y: (t == y).sum() / len(t)):
+        preds = []
+        for i in range(len(sen_1)):
+            pred = int(self.predict(vec_1[i], vec_2[i], sen_1[i], sen_2[i]) > threshold)
+            preds.append(pred)
+
+        return val_func(np.array(preds).reshape(-1), label.reshape(-1))
 
     # TODO: all vec and sen passed in is not time major, have to transpose in tensorflow, fix it?
-    def train(self, vec_1, vec_2, sen_1, sen_2, labels, simulation_num, epochs=100):
+    def train(self, vec_1, vec_2, sen_1, sen_2, labels, simulation_num, test_vec_1, test_vec_2, test_sen_1, test_sen_2,
+              test_label, epochs=100, print_epoch=1):
         """
         train RL model for match. sen must be list of [batch, ?, word_vec]
         simulation_num is generated seq number when monte carlo simulation
         """
         # iterator nums
-        for _ in range(epochs):
+        for fc in range(epochs):
             # TODO: current reward and policy update is running each batch, not whole epoch, may better?
             for j in range(len(vec_1)):
                 batch_size = vec_1[j].shape[0]
@@ -515,15 +563,24 @@ class MatchModel(object):
 
                 self.update_policy(policy_reward, policy_label, policy_sen_1, policy_sen_2, policy_vec_1, policy_vec_2)
 
+            # if fc % print_epoch == 0:
+            #     print(m.validate(test_sen_1, test_sen_2, test_vec_1, test_vec_2, test_label))
+
+    def re_init(self):
+        self.session.close()
+        self.session = tf.Session()
+        self.session.run(tf.global_variables_initializer())
+        self.session.run(tf.local_variables_initializer())
+
 
 m = MatchModel(300, 10)
-fx = np.load('fuck_x.npy')
-fy = np.load('fuck_y.npy')
+fx = np.transpose(np.load('fuck_x.npy'), (1, 0, 2))
+fy = np.transpose(np.load('fuck_y.npy'), (1, 0, 2))
 fl = np.load('fuck_label.npy')
 
-tx = m.gen_seq(np.transpose(fx, (1, 0, 2)))
-ty = m.gen_seq(np.transpose(fy, (1, 0, 2)))
+tx = np.transpose(m.gen_seq(fx), (1, 0, 2))
+ty = np.transpose(m.gen_seq(fy), (1, 0, 2))
 
 start = time.time()
-m.train([fx], [fy], [tx], [ty], [fl], 10, 1)
+m.train([fx], [fy], [tx], [ty], [fl], 10, fx, fy, tx, ty, fl, 1, 10)
 print(time.time() - start)
