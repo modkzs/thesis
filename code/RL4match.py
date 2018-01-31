@@ -45,12 +45,12 @@ class MatchModel(object):
 
             outputs_1, states_1 = tf.nn.dynamic_rnn(
                 tf.nn.rnn_cell.LSTMCell(self.deep_hidden_num, state_is_tuple=True, reuse=tf.AUTO_REUSE,
-                                        initializer=tf.orthogonal_initializer(dtype=tf.float32, seed=self.seed)), input_1,
-                dtype=tf.float32, time_major=True)
+                                        initializer=tf.orthogonal_initializer(dtype=tf.float32, seed=self.seed)),
+                input_1, dtype=tf.float32, time_major=True)
             outputs_2, states_2 = tf.nn.dynamic_rnn(
                 tf.nn.rnn_cell.LSTMCell(self.deep_hidden_num, state_is_tuple=True, reuse=tf.AUTO_REUSE,
-                                        initializer=tf.orthogonal_initializer(dtype=tf.float32, seed=self.seed)), input_2,
-                dtype=tf.float32, time_major=True)
+                                        initializer=tf.orthogonal_initializer(dtype=tf.float32, seed=self.seed)),
+                input_2, dtype=tf.float32, time_major=True)
             final_output = tf.concat([outputs_1[-1], outputs_2[-1]], axis=1)
 
             weight = tf.get_variable('weight', shape=[self.deep_hidden_num * 2, 1],
@@ -244,18 +244,6 @@ class MatchModel(object):
             seq_sen_1 = tf.placeholder(shape=[None, None, self.reward_hidden_num], dtype=np.float32, name="q1")
             seq_sen_2 = tf.placeholder(shape=[None, None, self.reward_hidden_num], dtype=np.float32, name="q2")
 
-            # seq_sen_var_1 = seq_sen_1
-            # seq_sen_var_2 = seq_sen_2
-
-            # TODO: change tensorflow code to support get gradient of placeholder
-            seq_sen_var_1 = tf.Variable(np.float32, validate_shape=False,
-                                        expected_shape=[None, None, self.reward_hidden_num])
-            seq_sen_var_2 = tf.Variable(np.float32, validate_shape=False,
-                                        expected_shape=[None, None, self.reward_hidden_num])
-
-            seq_sen_var_1 = tf.assign(seq_sen_var_1, seq_sen_1, validate_shape=False)
-            seq_sen_var_2 = tf.assign(seq_sen_var_2, seq_sen_2, validate_shape=False)
-
             # The code below is used to extend a array [range(a)] to shape [a, b, 1](same as map_1),
             # which all [b, 1] with same a is same value. This three code act like below:
             # idx = list(range(map_1.shape[0]))
@@ -266,8 +254,8 @@ class MatchModel(object):
                 tf.stack([tf.constant([1]), tf.reshape(tf.gather(tf.shape(map_1), 1), [1])], axis=1), [-1])
             expand_idx = tf.expand_dims(tf.tile(tf.expand_dims(idx, -1), expand_idx), -1)
 
-            seq_sen_var_1 = tf.gather_nd(seq_sen_var_1, tf.concat([expand_idx, map_1], 2))
-            seq_sen_var_2 = tf.gather_nd(seq_sen_var_2, tf.concat([expand_idx, map_2], 2))
+            seq_sen_var_1 = tf.gather_nd(seq_sen_1, tf.concat([expand_idx, map_1], 2))
+            seq_sen_var_2 = tf.gather_nd(seq_sen_2, tf.concat([expand_idx, map_2], 2))
 
             # TODO: concat?
             seq_input = tf.concat([seq_sen_var_1, seq_sen_var_2, seqs], axis=2)
@@ -582,8 +570,8 @@ class MatchModel(object):
 
                 self.update_policy(policy_reward, policy_label, policy_sen_1, policy_sen_2, policy_vec_1, policy_vec_2)
 
-            # if fc % print_epoch == 0:
-            #     print(m.validate(test_sen_1, test_sen_2, test_vec_1, test_vec_2, test_label))
+            if fc % print_epoch == 0:
+                print(m.validate(test_sen_1, test_sen_2, test_vec_1, test_vec_2, test_label))
 
     def re_init(self):
         self.session.close()
@@ -600,7 +588,7 @@ fl = np.load('fuck_label.npy')
 tx = np.transpose(m.gen_seq(fx), (1, 0, 2))
 ty = np.transpose(m.gen_seq(fy), (1, 0, 2))
 
-for i in range(10):
+for fsdfsd in range(10):
     start = time.time()
     m.train([fx], [fy], [tx], [ty], [fl], 10, fx, fy, tx, ty, fl, 1, 10)
     print(time.time() - start)
