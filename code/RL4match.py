@@ -244,6 +244,9 @@ class MatchModel(object):
             seq_sen_1 = tf.placeholder(shape=[None, None, self.reward_hidden_num], dtype=np.float32, name="q1")
             seq_sen_2 = tf.placeholder(shape=[None, None, self.reward_hidden_num], dtype=np.float32, name="q2")
 
+            # seq_sen_var_1 = seq_sen_1
+            # seq_sen_var_2 = seq_sen_2
+
             # TODO: change tensorflow code to support get gradient of placeholder
             seq_sen_var_1 = tf.Variable(np.float32, validate_shape=False,
                                         expected_shape=[None, None, self.reward_hidden_num])
@@ -410,7 +413,7 @@ class MatchModel(object):
         :return:
         """
         assert vec_1.shape[0] == sen_1.shape[0]
-        assert vec_2.shape[1] == sen_2.shape[1]
+        assert vec_2.shape[0] == sen_2.shape[0]
 
         len_1 = sen_1.shape[0]
         len_2 = sen_2.shape[0]
@@ -418,7 +421,21 @@ class MatchModel(object):
         results = {}
 
         # pos 2 probability map. Prob has no thing to do with past path, so can store
-        pos_p = {}
+        # pos_p = {}
+
+        sens_1 = []
+        sens_2 = []
+        vecs_1 = []
+        vecs_2 = []
+
+        for i in range(len_1):
+            for j in range(len_2):
+                sens_1.append(sen_1[i])
+                sens_2.append(sen_2[i])
+                vecs_1.append(vec_1[i])
+                vecs_2.append(vec_2[i])
+
+        probs = self.get_policy(np.array(sens_1), np.array(sens_2), np.array(vecs_1), np.array(vecs_2))
 
         for i in range(gen_num):
             direction = []
@@ -431,11 +448,13 @@ class MatchModel(object):
                 map_1.append(pos[0])
                 map_2.append(pos[1])
 
-                if (pos[0], pos[1]) not in pos_p:
-                    p = self.get_policy(sen_1[pos[0]], sen_2[pos[1]], vec_1[pos[0]], vec_2[pos[1]])[0]
-                    pos_p[(pos[0], pos[1])] = p
-                else:
-                    p = pos_p[(pos[0], pos[1])]
+                p = probs[pos[0] * len_2 + pos[1]]
+
+                # if (pos[0], pos[1]) not in pos_p:
+                #     p = self.get_policy(sen_1[pos[0]], sen_2[pos[1]], vec_1[pos[0]], vec_2[pos[1]])[0]
+                #     pos_p[(pos[0], pos[1])] = p
+                # else:
+                #     p = pos_p[(pos[0], pos[1])]
 
                 prob = random.random()
                 action = int(prob > p[0]) + int(prob > p[0] + p[1])
@@ -581,6 +600,7 @@ fl = np.load('fuck_label.npy')
 tx = np.transpose(m.gen_seq(fx), (1, 0, 2))
 ty = np.transpose(m.gen_seq(fy), (1, 0, 2))
 
-start = time.time()
-m.train([fx], [fy], [tx], [ty], [fl], 10, fx, fy, tx, ty, fl, 1, 10)
-print(time.time() - start)
+for i in range(10):
+    start = time.time()
+    m.train([fx], [fy], [tx], [ty], [fl], 10, fx, fy, tx, ty, fl, 1, 10)
+    print(time.time() - start)
