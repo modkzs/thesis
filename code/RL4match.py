@@ -29,7 +29,7 @@ class MatchModel(object):
         self.policy = self.policy_model(self.policy_lr)
         self.reward = self.reward_model(self.reward_lr)
 
-        self.deep_model_trained = False
+        self.reward_partial = None
 
         self.session = tf.Session()
         self.session.run(tf.global_variables_initializer())
@@ -138,8 +138,6 @@ class MatchModel(object):
                                                                   self.deep_model['input_2']: test_sen_2,
                                                                   self.deep_model['label']: test_y}))
 
-        self.deep_model_trained = True
-
     def gen_seq(self, sen_vec):
         """
         get the embedding vector of a sentence, input must be [batch, sen_len, word_vec] or [sen_len, word_vec]
@@ -234,10 +232,14 @@ class MatchModel(object):
             # first dimension is batch size
             # mean = tf.reduce_sum(outputs, [1, 2])
 
-            gradient = tf.placeholder(dtype=np.float32)
+            gradient = tf.placeholder(dtype=np.float32, name="gradient")
 
             optimizer_sen = tf.train.RMSPropOptimizer(learning_rate=lr)
             train_op_sen = optimizer_sen.minimize(tf.reduce_mean(tf.multiply(gradient, outputs)))
+
+            # partial run can't set optimizer as fetch target, so add a dummy node with control dependency with it
+            with tf.control_dependencies([train_op_sen]):
+                dummy = tf.constant(0)
 
         with tf.variable_scope('reward_model_seq'):
             # encode seq, the final output
@@ -264,7 +266,8 @@ class MatchModel(object):
 
             outputs_seq, _ = tf.nn.dynamic_rnn(
                 tf.nn.rnn_cell.LSTMCell(self.deep_hidden_num, state_is_tuple=True, reuse=tf.AUTO_REUSE,
-                                        initializer=tf.orthogonal_initializer(dtype=tf.float32, seed=self.seed)), seq_input,
+                                        initializer=tf.orthogonal_initializer(dtype=tf.float32, seed=self.seed)),
+                seq_input,
                 dtype=tf.float32, time_major=True)
 
             weight = tf.get_variable('weight', shape=[self.reward_hidden_num, 1],
@@ -279,34 +282,63 @@ class MatchModel(object):
             optimizer_seq = tf.train.RMSPropOptimizer(learning_rate=lr)
             train_op_seq = optimizer_seq.minimize(loss_op)
 
-            gradient_1 = tf.reduce_mean(tf.gradients(loss_op, seq_sen_var_1), [1, 2])
-            gradient_2 = tf.reduce_mean(tf.gradients(loss_op, seq_sen_var_2), [1, 2])
+            gradient_1, gradient_2 = tf.gradients(loss_op, [seq_sen_1, seq_sen_2])
 
         return {'sen': sen, 'seqs': seqs, 'outputs': outputs, 'gradient': gradient, 'prediction': prediction,
-                'train_op_seq': train_op_seq, 'train_op_sen': train_op_sen,
+                'train_op_seq': train_op_seq, 'train_op_sen': dummy,
                 'seq_sen_1': seq_sen_1, 'seq_sen_2': seq_sen_2, 'label': label,
                 'sen_gradient_1': gradient_1, 'sen_gradient_2': gradient_2,
                 'map_1': map_1, 'map_2': map_2}
 
-    def get_reward(self, sen_1, sen_2, seqs, map_1, map_2):
+    def get_reward_sen(self, sen_1, sen_2, partial_run=True):
+        """
+        compute sen embedding in reward model
+        :param sen_1: first sentence
+        :param sen_2: second sentence, can be None when no input
+        :param partial_run: partial_run is True when train, False when predict
+        :return:
+        """
         sen_1 = sen_1 if len(sen_1.shape) == 3 else sen_1.reshape([1, sen_1.shape[0], sen_1.shape[1]])
-        sen_2 = sen_2 if len(sen_2.shape) == 3 else sen_2.reshape([1, sen_2.shape[0], sen_2.shape[1]])
+        if sen_2 is not None:
+            sen_2 = sen_2 if len(sen_2.shape) == 3 else sen_2.reshape([1, sen_2.shape[0], sen_2.shape[1]])
 
+        if partial_run:
+            self.reward_partial = [
+                self.session.partial_run_setup([self.reward['outputs'], self.reward['train_op_sen']],
+                                               [self.reward['sen'], self.reward['gradient']]),
+                self.session.partial_run_setup([self.reward['outputs'], self.reward['train_op_sen']],
+                                               [self.reward['sen'], self.reward['gradient']])]
+
+        if not partial_run:
+            if sen_2 is not None:
+                return [self.session.run(self.reward['outputs'], feed_dict={self.reward['sen']: sen_1}),
+                        self.session.run(self.reward['outputs'], feed_dict={self.reward['sen']: sen_2})]
+            else:
+                return self.session.run(self.reward['outputs'], feed_dict={self.reward['sen']: sen_1})
+        else:
+            if sen_2 is not None:
+                return [self.session.partial_run(self.reward_partial[0], self.reward['outputs'],
+                                                 feed_dict={self.reward['sen']: sen_1}),
+                        self.session.partial_run(self.reward_partial[1], self.reward['outputs'],
+                                                 feed_dict={self.reward['sen']: sen_2})]
+            else:
+                return self.session.partial_run(self.reward_partial[0], self.reward['outputs'],
+                                                feed_dict={self.reward['sen']: sen_1})
+
+    def get_reward(self, sen_1, sen_2, seqs, map_1, map_2):
         map_1 = map_1 if len(map_1.shape) == 3 else map_1.reshape([map_1.shape[0], map_1.shape[1], 1])
         map_2 = map_2 if len(map_2.shape) == 3 else map_2.reshape([map_2.shape[0], map_2.shape[1], 1])
 
         seqs = seqs if len(seqs.shape) == 3 else seqs.reshape([1, seqs.shape[0], seqs.shape[1]])
 
-        output_1 = self.session.run(self.reward['outputs'], feed_dict={self.reward['sen']: sen_1})
-        output_2 = self.session.run(self.reward['outputs'], feed_dict={self.reward['sen']: sen_2})
+        sen_1 = sen_1 if len(sen_1.shape) == 3 else sen_1.reshape([1, sen_1.shape[0], sen_1.shape[1]])
+        sen_2 = sen_2 if len(sen_2.shape) == 3 else sen_2.reshape([1, sen_2.shape[0], sen_2.shape[1]])
 
         return self.session.run(self.reward['prediction'],
-                                feed_dict={self.reward['seq_sen_1']: output_1, self.reward['seq_sen_2']: output_2,
+                                feed_dict={self.reward['seq_sen_1']: sen_1, self.reward['seq_sen_2']: sen_2,
                                            self.reward['seqs']: seqs,
                                            self.reward['map_1']: map_1, self.reward['map_2']: map_2})
 
-    # a really fucking complicated function.
-    # Must compte reward seq model first, then get each gradient to reward sentence model, then update sentence model
     def update_reward(self, sen_1, sen_2, seqs, labels, map_1, map_2):
         sen_1 = sen_1 if len(sen_1.shape) == 3 else sen_1.reshape([1, sen_1.shape[0], sen_1.shape[1]])
         sen_2 = sen_2 if len(sen_2.shape) == 3 else sen_2.reshape([1, sen_2.shape[0], sen_2.shape[1]])
@@ -317,22 +349,24 @@ class MatchModel(object):
         if len(labels.shape) == 1:
             labels = labels.reshape([1, 1])
 
-        # TODO: output_1 and output_2 will go through GPU->CPU->GPU if runs on GPU. May change tensorflow to fit it?
-        output_1 = self.session.run(self.reward['outputs'], feed_dict={self.reward['sen']: sen_1})
-        output_2 = self.session.run(self.reward['outputs'], feed_dict={self.reward['sen']: sen_2})
-
         grad = self.session.run(
             [self.reward['train_op_seq'], self.reward['sen_gradient_1'], self.reward['sen_gradient_2']],
-            feed_dict={self.reward['seq_sen_1']: output_1, self.reward['seq_sen_2']: output_2,
+            feed_dict={self.reward['seq_sen_1']: sen_1, self.reward['seq_sen_2']: sen_2,
                        self.reward['seqs']: seqs, self.reward['label']: labels,
                        self.reward['map_1']: map_1, self.reward['map_2']: map_2}
         )[1:]
 
-        # TODO: each cell get same weight, actually should use map to get cell use weight and using it update model?
-        self.session.run(self.reward['train_op_sen'],
-                         feed_dict={self.reward['sen']: sen_1, self.reward['gradient']: grad[0]})
-        self.session.run(self.reward['train_op_sen'],
-                         feed_dict={self.reward['sen']: sen_2, self.reward['gradient']: grad[1]})
+        return grad
+
+    def update_reward_sen(self, sen_1, sen_2, grad):
+        sen_1 = sen_1 if len(sen_1.shape) == 3 else sen_1.reshape([1, sen_1.shape[0], sen_1.shape[1]])
+        self.session.partial_run(self.reward_partial[0], self.reward['train_op_sen'],
+                                 feed_dict={self.reward['gradient']: grad[0]})
+        if sen_2 is not None:
+            sen_2 = sen_2 if len(sen_2.shape) == 3 else sen_2.reshape([1, sen_2.shape[0], sen_2.shape[1]])
+
+            self.session.partial_run(self.reward_partial[1], self.reward['train_op_sen'],
+                                     feed_dict={self.reward['gradient']: grad[1]})
 
     def fill(self, vec, length):
         return np.array(vec + [np.array([0] * self.word_evc_len)] * (length - len(vec)))
@@ -354,10 +388,12 @@ class MatchModel(object):
             self.sen_1 = []
             self.sen_2 = []
 
+            self.index = []
+
             self.reward = None
 
         def add_path(self, add_map_1, add_map_2, add_direction, add_policy_label, add_vec_1, add_vec_2,
-                     add_sen_1, add_sen_2, add_reward_label):
+                     add_sen_1, add_sen_2, add_reward_label, add_index):
             self.map_1.append(add_map_1)
             self.map_2.append(add_map_2)
             self.direction.append(add_direction)
@@ -369,6 +405,8 @@ class MatchModel(object):
             self.vec_2.append(add_vec_2)
             self.sen_1.append(add_sen_1)
             self.sen_2.append(add_sen_2)
+
+            self.index.append(add_index)
 
             return self
 
@@ -384,14 +422,17 @@ class MatchModel(object):
             self.sen_1.extend(sp.sen_1)
             self.sen_2.extend(sp.sen_2)
 
+            self.index.extend(sp.index)
+
             del sp
 
         def update_reward(self, cur_reward):
             self.reward = cur_reward
 
-    def monte_carlo(self, vec_1, vec_2, sen_1, sen_2, gen_num, label):
+    def monte_carlo(self, vec_1, vec_2, sen_1, sen_2, gen_num, label, index=0):
         """
         monte carlo sample on a single sentence, may change to batch in future?
+        :param index: the sen index in a batch
         :param sen_2: input sentence, [sen_len, embedding_len], current get by a deep match rnn
         :param sen_1: input sentence, [sen_len, embedding_len]
         :param label: the pair label, match or mismatch
@@ -419,9 +460,9 @@ class MatchModel(object):
         for i in range(len_1):
             for j in range(len_2):
                 sens_1.append(sen_1[i])
-                sens_2.append(sen_2[i])
+                sens_2.append(sen_2[j])
                 vecs_1.append(vec_1[i])
-                vecs_2.append(vec_2[i])
+                vecs_2.append(vec_2[j])
 
         probs = self.get_policy(np.array(sens_1), np.array(sens_2), np.array(vecs_1), np.array(vecs_2))
 
@@ -437,12 +478,6 @@ class MatchModel(object):
                 map_2.append(pos[1])
 
                 p = probs[pos[0] * len_2 + pos[1]]
-
-                # if (pos[0], pos[1]) not in pos_p:
-                #     p = self.get_policy(sen_1[pos[0]], sen_2[pos[1]], vec_1[pos[0]], vec_2[pos[1]])[0]
-                #     pos_p[(pos[0], pos[1])] = p
-                # else:
-                #     p = pos_p[(pos[0], pos[1])]
 
                 prob = random.random()
                 action = int(prob > p[0]) + int(prob > p[0] + p[1])
@@ -465,7 +500,7 @@ class MatchModel(object):
                 map_2 += [map_2[-1]] * (len_1 - pos[0])
 
             results[len(map_1)] = results.get(len(map_1), self.SimulationPath()) \
-                .add_path(map_1, map_2, direction, labels, vec_1, vec_2, sen_1, sen_2, label)
+                .add_path(map_1, map_2, direction, labels, vec_1, vec_2, sen_1, sen_2, label, index)
         return results
 
     # TODO: how to run in batch?
@@ -478,11 +513,25 @@ class MatchModel(object):
         map_1 = []
         map_2 = []
 
+        sens_1 = []
+        sens_2 = []
+        vecs_1 = []
+        vecs_2 = []
+
+        for i in range(len_1):
+            for j in range(len_2):
+                sens_1.append(sen_1[i].reshape(-1))
+                sens_2.append(sen_2[j].reshape(-1))
+                vecs_1.append(vec_1[i].reshape(-1))
+                vecs_2.append(vec_2[j].reshape(-1))
+
+        probs = self.get_policy(np.array(sens_1), np.array(sens_2), np.array(vecs_1), np.array(vecs_2))
+
         while pos[0] < len_1 and pos[1] < len_2:
             map_1.append(pos[0])
             map_2.append(pos[1])
 
-            p = self.get_policy(sen_1[pos[0]], sen_2[pos[1]], vec_1[pos[0]], vec_2[pos[1]])[0]
+            p = probs[pos[0] * len_2 + pos[1]]
 
             if p[0] > p[1] and p[0] > p[2]:
                 action = 0
@@ -505,10 +554,11 @@ class MatchModel(object):
             map_1 += [i for i in range(pos[0], len_1)]
             map_2 += [map_2[-1]] * (len_1 - pos[0])
 
-        return self.get_reward(np.array(vec_1), np.array(vec_2), np.array(direction),
+        reward_sen_1, reward_sen_2 = self.get_reward_sen(np.array(vec_1), np.array(vec_2), False)
+
+        return self.get_reward(reward_sen_1, reward_sen_2, np.array(direction),
                                np.array(map_1).reshape([1, -1]), np.array(map_2).reshape([1, -1]))
 
-    # TODO: wait to write.....
     def validate(self, sen_1, sen_2, vec_1, vec_2, label, threshold=0.5, val_func=lambda t, y: (t == y).sum() / len(t)):
         preds = []
         for i in range(len(sen_1)):
@@ -533,20 +583,54 @@ class MatchModel(object):
 
                 for b in range(batch_size):
                     b_result = self.monte_carlo(
-                        vec_1[j][b], vec_2[j][b], sen_1[j][b], sen_2[j][b], simulation_num, labels[j][b])
+                        vec_1[j][b], vec_2[j][b], sen_1[j][b], sen_2[j][b], simulation_num, labels[j][b], b)
                     for (k, v) in b_result.items():
                         if k in result:
                             result[k].merge(v)
                         else:
                             result[k] = v
 
+                if vec_1[j].shape != vec_2[j].shape:
+                    reward_sen_1, reward_sen_2 = self.get_reward_sen(vec_1[j], vec_2[j], True)
+                else:
+                    reward_sen = self.get_reward_sen(np.concatenate(vec_1[j], vec_2[j]), None, True)
+                    reward_sen_1 = reward_sen[:vec_1[j].shape[0]]
+                    reward_sen_2 = reward_sen[vec_1[j].shape[0]:]
+
                 # TODO: currently each epoch has different data number, consider merge small length data together?
+                grad = {i: [np.zeros(reward_sen_1[0].shape), np.zeros(reward_sen_2[0].shape)] for i in range(1024)}
                 for sp in result.values():
-                    self.update_reward(np.array(sp.vec_1), np.array(sp.vec_2), np.array(sp.direction),
-                                       np.array(sp.reward_label), np.array(sp.map_1), np.array(sp.map_2))
+                    batch_reward_sen_1 = np.take(reward_sen_1, sp.index, axis=0)
+                    batch_reward_sen_2 = np.take(reward_sen_2, sp.index, axis=0)
+                    grads = self.update_reward(batch_reward_sen_1, batch_reward_sen_2, np.array(sp.direction),
+                                               np.array(sp.reward_label), np.array(sp.map_1), np.array(sp.map_2))
+
+                    for i in range(len(sp.index)):
+                        idx = sp.index[i]
+                        grad[idx][0] += grads[0][i]
+                        grad[idx][1] += grads[1][i]
+
+                g_1 = []
+                batch_sen_1 = []
+                # if vec_1[j].shape is same with vec_2[j].shape, we can update them together
+                g_2 = [] if vec_1[j].shape != vec_2[j].shape else g_1
+                batch_sen_2 = [] if vec_1[j].shape != vec_2[j].shape else batch_sen_1
+                for (idx, grads) in grad.items():
+                    g_1.append(grads[0])
+                    g_2.append(grads[1])
+                    batch_sen_1.append(vec_1[j][idx])
+                    batch_sen_2.append(vec_2[j][idx])
+
+                if vec_1[j].shape == vec_2[j].shape:
+                    batch_sen_2 = None
+
+                self.update_reward_sen(np.array(batch_sen_1), np.array(batch_sen_2), [np.array(g_1), np.array(g_2)])
 
                 for sp in result.values():
-                    sp.update_reward(self.get_reward(np.array(sp.vec_1), np.array(sp.vec_2),
+                    batch_reward_sen_1 = np.take(reward_sen_1, sp.index, axis=0)
+                    batch_reward_sen_2 = np.take(reward_sen_2, sp.index, axis=0)
+
+                    sp.update_reward(self.get_reward(batch_reward_sen_1, batch_reward_sen_2,
                                                      np.array(sp.direction), np.array(sp.map_1), np.array(sp.map_2)))
 
                 # batch policy update
@@ -571,7 +655,7 @@ class MatchModel(object):
                 self.update_policy(policy_reward, policy_label, policy_sen_1, policy_sen_2, policy_vec_1, policy_vec_2)
 
             if fc % print_epoch == 0:
-                print(m.validate(test_sen_1, test_sen_2, test_vec_1, test_vec_2, test_label))
+                print(self.validate(test_sen_1, test_sen_2, test_vec_1, test_vec_2, test_label))
 
     def re_init(self):
         self.session.close()
