@@ -562,7 +562,7 @@ class MatchModel(object):
                 reward_sen_1 = self.get_reward_sen(vec_1[j])
                 reward_sen_2 = self.get_reward_sen(vec_2[j])
 
-                while (correct < reward_threshold and rc < 30) or rc < reward_batch:
+                while (correct < reward_threshold and rc < 10) or rc < reward_batch:
                     # TODO: currently each epoch has different data number, consider merge small length data together?
                     grad = {}
                     for sp in result.values():
@@ -628,9 +628,11 @@ class MatchModel(object):
                     batch_reward_sen_1 = np.take(reward_sen_1, sp.index, axis=0)
                     batch_reward_sen_2 = np.take(reward_sen_2, sp.index, axis=0)
 
-                    sp.update_reward(self.get_reward(batch_reward_sen_1, batch_reward_sen_2,
-                                                     np.array(sp.direction), np.array(sp.map_1),
-                                                     np.array(sp.map_2)))
+                    reward = self.get_reward(batch_reward_sen_1, batch_reward_sen_2, np.array(sp.direction),
+                                             np.array(sp.map_1), np.array(sp.map_2))
+
+                    # right is 1, wrong is -1
+                    sp.update_reward(s*(((reward > 0.5).astype(int) == np.array(sp.reward_label)).astype(int)) - 1)
 
                 # batch policy update
                 policy_reward = []
@@ -654,7 +656,7 @@ class MatchModel(object):
                 self.update_policy(policy_reward, policy_label, policy_sen_1, policy_sen_2, policy_vec_1, policy_vec_2)
 
             if fc % print_epoch == 0:
-                print(m.validate(test_sen_1, test_sen_2, test_vec_1, test_vec_2, test_label))
+                print("validate_acc:", m.validate(test_sen_1, test_sen_2, test_vec_1, test_vec_2, test_label))
 
     def re_init(self):
         self.session.close()
@@ -663,15 +665,16 @@ class MatchModel(object):
         self.session.run(tf.local_variables_initializer())
 
 
-m = MatchModel(300, 10)
-fx = np.transpose(np.load('fuck_x.npy'), (1, 0, 2))
-fy = np.transpose(np.load('fuck_y.npy'), (1, 0, 2))
-fl = np.load('fuck_label.npy')
+if __name__ == 'main':
+    m = MatchModel(300, 10)
+    fx = np.transpose(np.load('fuck_x.npy'), (1, 0, 2))
+    fy = np.transpose(np.load('fuck_y.npy'), (1, 0, 2))
+    fl = np.load('fuck_label.npy')
 
-tx = np.transpose(m.gen_seq(fx), (1, 0, 2))
-ty = np.transpose(m.gen_seq(fy), (1, 0, 2))
+    tx = np.transpose(m.gen_seq(fx), (1, 0, 2))
+    ty = np.transpose(m.gen_seq(fy), (1, 0, 2))
 
-for fsdfsd in range(10):
-    start = time.time()
-    m.train([fx], [fy], [tx], [ty], [fl], 10, fx, fy, tx, ty, fl, 1, 10)
-    print(time.time() - start)
+    for fsdfsd in range(10):
+        start = time.time()
+        m.train([fx], [fy], [tx], [ty], [fl], 10, fx, fy, tx, ty, fl, 1, 10)
+        print(time.time() - start)
